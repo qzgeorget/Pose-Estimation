@@ -1,0 +1,396 @@
+# DCPose Three-Pronged Development Plan
+
+This plan organizes the DCPose work into three sequential paths:
+
+1. Reproduce the original implementation.
+2. Modernize the original implementation while preserving its core design.
+3. Experiment with alternative architectures and temporal modeling ideas.
+
+The paths should be completed in order. Each path must pass its verification gates before the next path begins.
+
+## Branch structure
+
+The recommended branch graph is:
+
+```text
+dcpose-original
+        |
+      legacy
+        |
+  modernisation
+        |
+    experiment
+```
+
+Experimental alternatives should normally branch from the verified `modernisation` branch:
+
+```text
+modernisation
+├── experiment/transformer-temporal-fusion
+├── experiment/mamba-temporal-fusion
+└── experiment/alternative-deformable-op
+```
+
+## Initial repository baseline
+
+Before making implementation changes, preserve the repository as received:
+
+```bash
+cd /home/lunet/cogt/Project/Pose-Estimation
+git status
+```
+
+If the worktree contains only the intended repository state, create the legacy branch:
+
+```bash
+git switch -c legacy
+```
+
+If the original implementation is not already represented by a commit, create a baseline commit before adding changes:
+
+```bash
+git add DCPose
+git commit -m "Preserve original DCPose implementation
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+```
+
+The baseline should also be tagged if it is useful for later comparisons:
+
+```bash
+git tag dcpose-original
+```
+
+Do not delete or overwrite unrelated existing worktree changes.
+
+# Path 1: Legacy reproduction
+
+## Objective
+
+Reproduce the published DCPose implementation as faithfully as possible. This path is the control condition for every later change.
+
+## Preserve
+
+- Python 3.6.12.
+- PyTorch 1.4.0.
+- torchvision 0.5.0.
+- The pinned packages in [`DCPose/DCPose_requirement.txt`](./DCPose/DCPose_requirement.txt).
+- The original YOLOv3 detector.
+- The original custom deformable-convolution extension.
+- The original DCPose checkpoint.
+- The original preprocessing and post-processing.
+- The three-frame temporal input:
+  - current frame;
+  - previous frame;
+  - next frame.
+
+## Setup sequence
+
+```bash
+cd /home/lunet/cogt/Project/Pose-Estimation/DCPose
+conda create -n DCPose python=3.6.12
+conda activate DCPose
+pip install -r DCPose_requirement.txt
+cd thirdparty/deform_conv
+python setup.py develop
+cd ../..
+```
+
+Download the supplementary model files described in [`DCPose/README.md`](./DCPose/README.md), place or link them as `DCPose/DcPose_supp_files`, and verify:
+
+```bash
+test -f DcPose_supp_files/object_detector/YOLOv3/yolov3.weights
+test -f DcPose_supp_files/pretrained_models/DCPose/PoseTrack17_DCPose.pth
+python -c "import deform_conv_cuda; print('deformable convolution loaded')"
+```
+
+## Legacy success gates
+
+The legacy path is complete only when all of the following pass:
+
+1. The Python environment installs.
+2. Required Python imports succeed.
+3. The custom deformable-convolution extension builds and imports.
+4. The DCPose model constructs.
+5. The supplied checkpoint loads without missing or unexpected state-dict keys.
+6. A short video is decoded into frames.
+7. YOLOv3 produces person detections.
+8. DCPose produces 17 keypoints for a detected person.
+9. JSON and visualization outputs are written.
+10. The output video can be opened.
+11. PoseTrack evaluation runs if the required dataset and evaluation files are available.
+
+Record the environment versions, GPU, CUDA version, checkpoint filenames, input clip properties, and output metrics. These records define the reference baseline.
+
+# Path 2: Modernization
+
+## Create the branch
+
+Create modernization from the verified legacy branch:
+
+```bash
+git switch legacy
+git switch -c modernisation
+```
+
+Do not modernize directly on top of an unverified legacy implementation.
+
+## Objective
+
+Update the runtime and infrastructure while preserving DCPose's core research design:
+
+- temporal current/previous/next frame input;
+- rough pose estimation;
+- Pose Temporal Merger;
+- Pose Residual Fusion;
+- Pose Correction Network;
+- deformable convolution;
+- heatmap decoding and coordinate restoration.
+
+## Modernization order
+
+Modernize one layer at a time:
+
+1. Python runtime.
+2. PyTorch and torchvision.
+3. NumPy and scientific packages.
+4. Explicit device handling.
+5. Custom deformable convolution.
+6. Person detector.
+7. Video I/O and output handling.
+
+Do not change all of these simultaneously. Each stage should leave a runnable checkpoint.
+
+## Runtime modernization
+
+Create a separate modern environment rather than modifying the legacy environment:
+
+```bash
+cd /home/lunet/cogt/Project/Pose-Estimation
+python3 -m venv .venv-dcp-modern
+source .venv-dcp-modern/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
+Install a matching current PyTorch/torchvision pair using the command generated by the official [PyTorch installation selector](https://pytorch.org/get-started/locally/). Then install the non-PyTorch runtime packages:
+
+```bash
+python -m pip install numpy scipy opencv-python pillow pyyaml tqdm yacs
+```
+
+Verify the environment:
+
+```bash
+python - <<'PY'
+import cv2
+import numpy
+import torch
+import torchvision
+import yaml
+
+print("OpenCV:", cv2.__version__)
+print("NumPy:", numpy.__version__)
+print("PyTorch:", torch.__version__)
+print("torchvision:", torchvision.__version__)
+print("CUDA build:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+PY
+```
+
+## Compatibility work
+
+Search for removed or deprecated APIs before changing NumPy or PyTorch:
+
+```bash
+rg -n "np\.(float|int|bool|object|str|complex)" DCPose
+rg -n "\.cuda\(\)|torch\.autograd\.Variable|F\.upsample|register_backward_hook" DCPose
+```
+
+Replace deprecated constructs with explicit modern equivalents while preserving behavior. In particular, introduce explicit device handling instead of scattered `.cuda()` calls.
+
+The key files needing device review are:
+
+- [`DCPose/tools/inference.py`](./DCPose/tools/inference.py)
+- [`DCPose/posetimation/zoo/DcPose/dcpose_rsn.py`](./DCPose/posetimation/zoo/DcPose/dcpose_rsn.py)
+- [`DCPose/object_detector/YOLOv3/detector_yolov3.py`](./DCPose/object_detector/YOLOv3/detector_yolov3.py)
+
+The detector must not force a hardcoded GPU such as `CUDA_VISIBLE_DEVICES=3`. GPU selection should be controlled by the launch environment.
+
+## Deformable-convolution modernization
+
+The deformable-convolution operator is the most sensitive part of the modernization.
+
+Choose one controlled route:
+
+### Route A: Use a maintained operator
+
+Use a maintained modern deformable-convolution implementation only after confirming that it supports the same:
+
+- deformable convolution variant;
+- offsets and masks;
+- dilation;
+- groups and deformable groups;
+- tensor layout;
+- output shape;
+- numerical behavior.
+
+### Route B: Port the existing extension
+
+Update the existing C++/CUDA extension and Python wrappers to the modern PyTorch extension API. Keep the operator interface stable where possible.
+
+For either route, compare the old and modern operators using identical inputs, offsets, masks, and weights. Check output shapes and numerical differences before integrating the operator into the full model.
+
+## Detector modernization
+
+A newer person detector is reasonable, but it changes the boxes supplied to DCPose. Keep detector and pose-model effects separate by testing:
+
+1. Original detector with the modernized pose model.
+2. New detector with the modernized pose model.
+3. If possible, identical or externally supplied boxes for both paths.
+
+This makes it possible to determine whether a change is caused by DCPose or by person detection.
+
+## Modernization success gates
+
+The modernization path is complete only when:
+
+1. The modern environment installs reproducibly.
+2. PyTorch and torchvision are a compatible pair.
+3. The model imports.
+4. The deformable-convolution operator builds or its replacement imports.
+5. The original checkpoint loads, or incompatibilities are documented.
+6. A fixed image triplet and bounding box produce expected output shapes.
+7. Modern predictions are compared against the legacy reference.
+8. A short video completes successfully.
+9. JSON and visualization output are generated.
+10. PoseTrack evaluation uses the same split and metrics as the legacy baseline.
+
+The modernization path should not be considered green merely because the code runs. It must also demonstrate that preprocessing, output shapes, keypoint ordering, and predictions remain acceptably equivalent unless a deliberate behavior change is documented.
+
+# Path 3: Adaptation and experimentation
+
+## Create the branch
+
+Start experimentation only after modernization has passed its gates:
+
+```bash
+git switch modernisation
+git switch -c experiment
+```
+
+For distinct research questions, prefer separate branches:
+
+```bash
+git switch modernisation
+git switch -c experiment/transformer-temporal-fusion
+```
+
+```bash
+git switch modernisation
+git switch -c experiment/mamba-temporal-fusion
+```
+
+```bash
+git switch modernisation
+git switch -c experiment/alternative-deformable-op
+```
+
+## Objective
+
+Explore new ideas while retaining a measurable relationship to DCPose. Possible experiments include:
+
+- transformer-based temporal fusion;
+- Mamba or state-space temporal modeling;
+- replacing or augmenting deformable convolution;
+- newer pose backbones;
+- longer temporal windows;
+- learned temporal alignment;
+- improved person tracking;
+- alternative detector-pose pipelines.
+
+An experiment should state the hypothesis it tests. For example:
+
+> Replacing the DCPose three-frame temporal fusion with a lightweight transformer improves temporal stability without unacceptable latency or memory growth.
+
+## Checkpoint compatibility
+
+Large architectural changes generally cannot load the original DCPose checkpoint directly. Distinguish:
+
+- loading the original checkpoint unchanged;
+- partially transferring compatible weights;
+- fine-tuning from transferred weights;
+- training the experimental model from scratch.
+
+Document which case applies to every experiment.
+
+## Experiment success gates
+
+Every experiment should report:
+
+1. The exact parent branch and commit.
+2. The model and configuration changes.
+3. The detector used.
+4. The dataset and split.
+5. The checkpoint initialization strategy.
+6. Training or fine-tuning details.
+7. Pose accuracy metrics.
+8. Temporal stability metrics.
+9. Inference latency and throughput.
+10. GPU memory use.
+11. Parameter count.
+12. Failure cases and qualitative results.
+
+# Evaluation protocol
+
+Once `legacy`, `modernisation`, and the selected experiment branches are green, compare them using a fixed protocol.
+
+## Keep comparisons controlled
+
+| Comparison | Detector | Pose model | Runtime | Purpose |
+|---|---|---|---|---|
+| Legacy baseline | Original YOLOv3 | Original DCPose | Original stack | Reproduction control |
+| Modern runtime | Original or equivalent detector | Original DCPose | Modern stack | Runtime compatibility |
+| Modern detector | New detector | Original DCPose | Modern stack | Detector impact |
+| Modern architecture | Controlled detector | Modified DCPose | Modern stack | Architecture impact |
+| Experiment | Controlled detector | New temporal/operator design | Modern stack | Research result |
+
+Keep the following constant whenever possible:
+
+- dataset split;
+- input videos or images;
+- bounding boxes;
+- image preprocessing;
+- keypoint ordering;
+- confidence handling;
+- evaluation script;
+- metrics;
+- checkpoint selection criteria.
+
+If a variable must change, record it explicitly.
+
+## PoseTrack checkpoint tests
+
+Use PoseTrack17/18 checkpoints and data in stages:
+
+1. **Checkpoint loading:** verify that the model can load the supplied checkpoint.
+2. **Inference reproduction:** compare predictions on fixed samples.
+3. **Fine-tuning:** evaluate adaptation to the modern runtime or operator.
+4. **Training from scratch:** evaluate a substantially changed architecture.
+
+For substantial experiments such as replacing deformable convolution with a transformer or Mamba block, expect to require a new configuration and fine-tuning or full retraining.
+
+## Final green criteria
+
+A path is green when its environment, operator, model, inference, and evaluation gates pass, and its results are reproducible from documented commands and commits.
+
+The final comparison should include:
+
+- PoseTrack metrics;
+- temporal stability;
+- inference speed;
+- memory usage;
+- model size;
+- detector assumptions;
+- qualitative video examples;
+- known limitations.
+
