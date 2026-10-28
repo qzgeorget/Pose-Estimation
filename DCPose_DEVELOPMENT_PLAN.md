@@ -124,6 +124,8 @@ Record the environment versions, GPU, CUDA version, checkpoint filenames, input 
 
 # Path 2: Modernization
 
+**Current status (2026-10-28): ACTIVE FALLBACK.** The original supplementary Google Drive link returns 404, and the project owner has contacted Liu Zhenguang for advice or an alternate source for the pretrained DCPose checkpoint weights. Keep the legacy recovery effort open, but begin modernization without waiting for the response. The modernization branch must preserve DCPose's temporal current/previous/next-frame concept while replacing unavailable or obsolete runtime components.
+
 ## Create the branch
 
 Create modernization from the verified legacy branch:
@@ -393,4 +395,3 @@ The final comparison should include:
 - detector assumptions;
 - qualitative video examples;
 - known limitations.
-
